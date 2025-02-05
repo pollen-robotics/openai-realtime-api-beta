@@ -1,28 +1,17 @@
-// javascript
-//
+// node_devenv.mjs
+// Adapted for Ubuntu from the original Mac version.
 // This script connects to the OpenAI Realtime API to create a voice-based assistant.
-// 
 // It captures audio input from your microphone, sends it to the OpenAI API for processing,
 // and plays back the assistant's audio response through your speakers.
-// 
-// **How to Run on a Mac:**
-// 
-// 1. **Install Dependencies:**
-//    - Ensure you have Node.js and npm installed.
-//    - Run `npm init & npm install` to install all required packages.
-// 
-// 2. **Set Up Environment Variables:**
-//    - Create a `.env` file in the same directory as this script.
-//    - Add your OpenAI API key to the `.env` file:
-//      ```
-//      OPENAI_API_KEY=your_api_key_here
-//      ```
-// 
-// 3. **Run the Script:**
-//    - Execute the script with the command `node node_devenv.mjs`.
-// 
-// **Note:** Make sure your microphone and speakers are properly configured and accessible on your Mac.
 //
+// Setup Instructions for Ubuntu:
+// 1. Install Node.js and npm.
+// 2. Run `npm install` to install required packages (e.g., @openai/realtime-api-beta, mic, speaker, dotenv).
+// 3. Ensure your microphone and speakers are properly configured on your Ubuntu system.
+// 4. Create a `.env` file with your API key and, optionally, a microphone device:
+//      OPENAI_API_KEY=your_api_key_here
+//      MIC_DEVICE=default         (or set to a specific ALSA device, e.g. "plughw:1,0")
+// 5. Run the script with: `node node_devenv.mjs`
 
 import { RealtimeClient } from '@openai/realtime-api-beta';
 import mic from 'mic';
@@ -33,9 +22,8 @@ import dotenv from 'dotenv';
 dotenv.config();
 
 const API_KEY = process.env.OPENAI_API_KEY;
-
 if (!API_KEY) {
-  console.error('Please set your OPENAI_API_KEY in your environment variables.');
+  console.error('ERROR: Please set your OPENAI_API_KEY in your .env file or environment variables.');
   process.exit(1);
 }
 
@@ -47,120 +35,158 @@ const client = new RealtimeClient({
 let micInstance;
 let speaker;
 
+// Starting the script with verbose logging.
+console.log("Starting the voice assistant script on Ubuntu...");
+
 async function main() {
   try {
-    console.log('Attempting to connect...');
+    console.log('Connecting to the OpenAI Realtime API...');
     await client.connect();
+    console.log('Successfully connected to the API.');
     startAudioStream();
-    console.log('Connection established successfully.');
   } catch (error) {
     console.error('Error connecting to OpenAI Realtime API:', error);
-    console.log('Connection attempt failed. Retrying in 5 seconds...');
+    console.log('Retrying connection in 5 seconds...');
     setTimeout(main, 5000);
   }
 }
 
 main();
 
+// Listen for completed conversation items and play audio if available.
 client.on('conversation.item.completed', ({ item }) => {
-  console.log('Conversation item completed:', item);
+  console.log('Received a completed conversation item:', item);
 
-  if (item.type === 'message' && item.role === 'assistant' && item.formatted && item.formatted.audio) {
-    console.log('Playing audio response...');
+  if (
+    item.type === 'message' &&
+    item.role === 'assistant' &&
+    item.formatted &&
+    item.formatted.audio
+  ) {
+    console.log('Assistant audio response detected. Preparing to play...');
     playAudio(item.formatted.audio);
   } else {
-    console.log('No audio content in this item.');
+    console.log('The conversation item does not contain audio content.');
   }
 });
 
-// BEGIN MANAGE Mac AUDIO INTERFACES
-
+// Configure and start the microphone stream.
 function startAudioStream() {
   try {
-    micInstance = mic({
+    // Define options for the mic. Enable debug for more verbose logging.
+    const micOptions = {
       rate: '24000',
       channels: '1',
-      debug: false,
+      debug: true,
       exitOnSilence: 6,
       fileType: 'raw',
       encoding: 'signed-integer',
-    });
+    };
 
+    // On Linux, you might need to specify the device (e.g., via the MIC_DEVICE env variable).
+    if (process.platform === 'linux') {
+      micOptions.device = process.env.MIC_DEVICE || 'default';
+      console.log(`Running on Linux. Using microphone device: ${micOptions.device}`);
+    }
+
+    micInstance = mic(micOptions);
     const micInputStream = micInstance.getAudioStream();
 
-    micInputStream.on('error', (error) => {
-      console.error('Microphone error:', error);
+    micInputStream.on('startComplete', () => {
+      console.log('Microphone stream started successfully.');
     });
 
-    micInstance.start();
-    console.log('Microphone started streaming.');
+    micInputStream.on('stopComplete', () => {
+      console.log('Microphone stream has been stopped.');
+    });
 
-    let audioBuffer = Buffer.alloc(0);
-    const chunkSize = 4800; // 0.2 seconds of audio at 24kHz
+    micInputStream.on('error', (error) => {
+      console.error('Microphone encountered an error:', error);
+    });
 
+    // Log every data event and process audio in fixed-size chunks.
     micInputStream.on('data', (data) => {
-      audioBuffer = Buffer.concat([audioBuffer, data]);
-
-      while (audioBuffer.length >= chunkSize) {
-        const chunk = audioBuffer.slice(0, chunkSize);
-        audioBuffer = audioBuffer.slice(chunkSize);
-
-        const int16Array = new Int16Array(chunk.buffer, chunk.byteOffset, chunk.length / 2);
-
-        try {
-          client.appendInputAudio(int16Array);
-        } catch (error) {
-          console.error('Error sending audio data:', error);
-        }
-      }
+      console.log(`Received audio data chunk (${data.length} bytes).`);
+      processAudioData(data);
     });
 
     micInputStream.on('silence', () => {
-      console.log('Silence detected, creating response...');
+      console.log('Silence detected. Triggering response creation...');
       try {
         client.createResponse();
       } catch (error) {
-        console.error('Error creating response:', error);
+        console.error('Error while triggering response creation:', error);
       }
     });
+
+    micInstance.start();
+    console.log('Microphone has started streaming audio.');
   } catch (error) {
-    console.error('Error starting audio stream:', error);
+    console.error('Error starting the audio stream:', error);
   }
 }
 
+// Global buffer to accumulate incoming audio data.
+let audioBuffer = Buffer.alloc(0);
+const chunkSize = 4800; // ~0.2 seconds of audio at 24000 Hz (1 channel, 16-bit)
+
+// Processes incoming audio data in fixed-size chunks.
+function processAudioData(data) {
+  try {
+    audioBuffer = Buffer.concat([audioBuffer, data]);
+    // Process the buffer in chunks
+    while (audioBuffer.length >= chunkSize) {
+      const chunk = audioBuffer.slice(0, chunkSize);
+      audioBuffer = audioBuffer.slice(chunkSize);
+
+      // Convert Buffer to Int16Array
+      const int16Array = new Int16Array(chunk.buffer, chunk.byteOffset, chunk.length / 2);
+      console.log('Sending an audio chunk to the OpenAI Realtime API...');
+      try {
+        client.appendInputAudio(int16Array);
+      } catch (error) {
+        console.error('Error sending audio chunk:', error);
+      }
+    }
+  } catch (error) {
+    console.error('Error processing audio data:', error);
+  }
+}
+
+// Plays audio received from the API.
 function playAudio(audioData) {
   try {
+    console.log('Preparing to play received audio...');
     if (!speaker) {
       speaker = new Speaker({
         channels: 1,
         bitDepth: 16,
         sampleRate: 24000,
       });
+      console.log('Speaker instance created for audio playback.');
     }
 
-    // Convert Int16Array to Buffer
+    // Convert the Int16Array audioData to a Buffer.
     const buffer = Buffer.from(audioData.buffer);
+    console.log(`Audio data converted to Buffer (length: ${buffer.length} bytes).`);
 
-    // Create a readable stream from the buffer
+    // Create a Readable stream from the Buffer and pipe it to the speaker.
     const readableStream = new Readable({
       read() {
         this.push(buffer);
-        this.push(null);
+        this.push(null); // Signal end-of-stream.
       },
     });
 
-    // Pipe the stream to the speaker
     readableStream.pipe(speaker);
-    console.log('Audio sent to speaker for playback. Buffer length:', buffer.length);
+    console.log('Audio is now playing through your speakers.');
 
-    // Handle the 'close' event to recreate the speaker for the next playback
+    // Listen for the 'close' event to reinitialize the speaker for future playbacks.
     speaker.on('close', () => {
-      console.log('Speaker closed. Recreating for next playback.');
+      console.log('Speaker closed after playback. Resetting speaker instance.');
       speaker = null;
     });
   } catch (error) {
-    console.error('Error playing audio:', error);
+    console.error('Error during audio playback:', error);
   }
 }
-
-// END MANAGE AUDIO INTERFACES
