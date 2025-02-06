@@ -157,20 +157,20 @@ function processAudioData(data) {
 function playAudio(audioData) {
   try {
     console.log('Preparing to play received audio...');
-    if (!speaker) {
-      speaker = new Speaker({
-        channels: 1,
-        bitDepth: 16,
-        sampleRate: 24000,
-      });
-      console.log('Speaker instance created for audio playback.');
-    }
+
+    // Create a new Speaker instance for each playback.
+    const speakerInstance = new Speaker({
+      channels: 1,
+      bitDepth: 16,
+      sampleRate: 24000,
+    });
+    console.log('New Speaker instance created for audio playback.');
 
     // Convert the Int16Array audioData to a Buffer.
     const buffer = Buffer.from(audioData.buffer);
     console.log(`Audio data converted to Buffer (length: ${buffer.length} bytes).`);
 
-    // Create a Readable stream from the Buffer and pipe it to the speaker.
+    // Create a readable stream from the buffer.
     const readableStream = new Readable({
       read() {
         this.push(buffer);
@@ -178,15 +178,22 @@ function playAudio(audioData) {
       },
     });
 
-    readableStream.pipe(speaker);
+    // Pipe the stream to the speaker instance.
+    readableStream.pipe(speakerInstance);
     console.log('Audio is now playing through your speakers.');
 
-    // Listen for the 'close' event to reinitialize the speaker for future playbacks.
-    speaker.on('close', () => {
-      console.log('Speaker closed after playback. Resetting speaker instance.');
-      speaker = null;
+    // Optionally, listen for when playback is done.
+    speakerInstance.on('close', () => {
+      console.log('Speaker closed after playback.');
     });
+
+    // Optionally, handle errors on the speaker instance.
+    speakerInstance.on('error', (error) => {
+      console.error('Error in speaker playback:', error);
+    });
+
   } catch (error) {
-    console.error('Error during audio playback:', error);
+    console.error('Error playing audio:', error);
   }
 }
+
